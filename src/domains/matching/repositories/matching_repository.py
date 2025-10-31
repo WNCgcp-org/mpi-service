@@ -7,65 +7,50 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import logging
-from motor.motor_asyncio import AsyncIOMotorDatabase
-import redis.asyncio as redis
 import orjson
+
+from core.database import BaseRepository, DatabaseManager
+from core.cache import CacheManager, MatchingCache, MetricsCache, CacheKeyBuilder
 
 
 logger = logging.getLogger(__name__)
 
 
-class MatchingRepository:
+class MatchingRepository(BaseRepository):
     """Repository for matching operations and caching"""
 
-    def __init__(self, db: AsyncIOMotorDatabase, redis_client: redis.Redis):
-        self.db = db
-        self.redis = redis_client
-        self.cache_collection = db["cache"]
-        self.metrics_collection = db["metrics"]
+    def __init__(self, db_manager: DatabaseManager, cache_manager: Optional[CacheManager] = None):
+        super().__init__(db_manager, "cache")
+        self.cache_manager = cache_manager
+        self.metrics_collection = db_manager.get_collection("metrics")
 
-    async def initialize(self):
-        """Create indexes for caching"""
-        # Cache indexes with TTL
-        await self.cache_collection.create_index([("expires_at", 1)], expireAfterSeconds=0)
-        await self.cache_collection.create_index([("request_hash", 1)], unique=True)
-
-        # Metrics indexes with TTL (30 day retention)
-        await self.metrics_collection.create_index([("expires_at", 1)], expireAfterSeconds=0)
-        await self.metrics_collection.create_index([("timestamp", -1)])
+        # Initialize high-level cache utilities
+        self.matching_cache = MatchingCache(cache_manager) if cache_manager else None
+        self.metrics_cache = MetricsCache(cache_manager) if cache_manager else None
 
     def generate_cache_key(self, patient_data: Dict[str, Any]) -> str:
         """Generate cache key from patient data"""
-        # Use only key fields for cache key
-        key_fields = {
-            'ssn': patient_data.get('ssn', ''),
-            'first_name': patient_data.get('first_name', '').lower(),
-            'last_name': patient_data.get('last_name', '').lower(),
-            'dob': patient_data.get('dob', '')
-        }
-
-        key_string = orjson.dumps(key_fields, option=orjson.OPT_SORT_KEYS)
-        return f"mpi:{hashlib.blake2b(key_string, digest_size=16).hexdigest()}"
+        return CacheKeyBuilder.mpi_match_key(patient_data)
 
     async def get_cached_match(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Get cached match result from Redis or MongoDB"""
+        if not self.cache_manager:
+            return None
+
         # Try Redis first (L2 cache)
-        try:
-            redis_result = await self.redis.get(cache_key)
-            if redis_result:
-                return orjson.loads(redis_result)
-        except Exception as e:
-            logger.warning(f"Redis cache get failed: {e}")
+        result = await self.cache_manager.get(cache_key)
+        if result:
+            return result
 
         # Try MongoDB cache (L3 cache)
         try:
-            mongo_result = await self.cache_collection.find_one(
+            mongo_result = await self.find_one(
                 {"request_hash": cache_key},
-                {"_id": 0, "expires_at": 0}
+                projection={"_id": 0, "expires_at": 0}
             )
             if mongo_result:
                 # Populate Redis cache
-                await self.set_cache(cache_key, mongo_result, ttl_seconds=3600)
+                await self.cache_manager.set(cache_key, mongo_result, ttl_seconds=3600)
                 return mongo_result
         except Exception as e:
             logger.warning(f"MongoDB cache get failed: {e}")
@@ -79,17 +64,15 @@ class MatchingRepository:
         ttl_seconds: int = 3600
     ):
         """Set cache in both Redis and MongoDB"""
-        serialized = orjson.dumps(result)
+        if not self.cache_manager:
+            return
 
         # Redis cache
-        try:
-            await self.redis.setex(cache_key, ttl_seconds, serialized)
-        except Exception as e:
-            logger.warning(f"Redis cache set failed: {e}")
+        await self.cache_manager.set(cache_key, result, ttl_seconds)
 
         # MongoDB cache with TTL
         try:
-            await self.cache_collection.update_one(
+            await self.update_one(
                 {"request_hash": cache_key},
                 {
                     "$set": {
@@ -113,6 +96,11 @@ class MatchingRepository:
     ):
         """Record performance metric"""
         try:
+            # Use the MetricsCache utility if available
+            if self.metrics_cache:
+                await self.metrics_cache.record_metric(endpoint, response_time_ms, cache_hit, status)
+
+            # Also store in MongoDB for persistence
             await self.metrics_collection.insert_one({
                 "endpoint": endpoint,
                 "response_time_ms": response_time_ms,
@@ -151,3 +139,22 @@ class MatchingRepository:
             }
 
         return summary
+
+    # High-level convenience methods using the new abstractions
+    async def get_match_from_cache(self, patient_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Get cached match result using high-level API"""
+        if self.matching_cache:
+            return await self.matching_cache.get_match_result(patient_data)
+        return None
+
+    async def cache_match_result(self, patient_data: Dict[str, Any], result: Dict[str, Any]) -> bool:
+        """Cache match result using high-level API"""
+        if self.matching_cache:
+            return await self.matching_cache.cache_match_result(patient_data, result)
+        return False
+
+    async def invalidate_patient_cache(self, mpi_id: str) -> int:
+        """Invalidate all cached data for a patient"""
+        if self.matching_cache:
+            return await self.matching_cache.invalidate_patient_cache(mpi_id)
+        return 0

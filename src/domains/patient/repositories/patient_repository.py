@@ -3,73 +3,59 @@ Patient repository - handles data persistence
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from datetime import datetime, timedelta
 import logging
 import hashlib
 
 from ..models.patient import PatientEntity
+from core.database import BaseRepository, DatabaseManager
+from core.cache import CacheManager, cache_patient_data, get_cached_patient_data, invalidate_patient_cache
 
 
 logger = logging.getLogger(__name__)
 
 
-class PatientRepository:
+class PatientRepository(BaseRepository):
     """Repository for patient data persistence"""
 
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.db = db
-        self.collection = db["mpi_identifiers"]
-        self.mappings_collection = db["identifier_mappings"]
-        self.audit_collection = db["patient_audit"]
-        self.links_collection = db["patient_links"]
+    def __init__(self, db_manager: DatabaseManager, cache_manager: Optional[CacheManager] = None):
+        super().__init__(db_manager, "mpi_identifiers")
+        self.cache_manager = cache_manager
 
-    async def initialize(self):
-        """Create indexes for optimal performance"""
-        # Primary indexes
-        await self.collection.create_index([("mpi_id", 1)], unique=True)
-        await self.collection.create_index([("ssn_hash", 1)])
-        await self.collection.create_index([("last_accessed", 1)])
+        # Get collections using the database manager
+        self.mappings_collection = db_manager.get_collection("identifier_mappings")
+        self.audit_collection = db_manager.get_collection("patient_audit")
+        self.links_collection = db_manager.get_collection("patient_links")
 
-        # Compound indexes for matching
-        await self.collection.create_index([
-            ("match_keys.ssn_last4", 1),
-            ("match_keys.dob", 1)
-        ])
-        await self.collection.create_index([
-            ("match_keys.last_name_soundex", 1),
-            ("match_keys.first_name_soundex", 1),
-            ("match_keys.dob", 1)
-        ])
-
-        # Mapping indexes
-        await self.mappings_collection.create_index([
-            ("external_id", 1),
-            ("external_system", 1)
-        ], unique=True)
-        await self.mappings_collection.create_index([("mpi_id", 1)])
-
-        # Audit index
-        await self.audit_collection.create_index([("mpi_id", 1)])
-        await self.audit_collection.create_index([("timestamp", -1)])
 
     async def find_by_mpi_id(self, mpi_id: str) -> Optional[PatientEntity]:
         """Find patient by MPI ID"""
-        doc = await self.collection.find_one({"mpi_id": mpi_id})
+        # Try cache first if available
+        if self.cache_manager:
+            cached_data = await get_cached_patient_data(mpi_id)
+            if cached_data:
+                return self._doc_to_entity(cached_data)
+
+        doc = await self.find_one({"mpi_id": mpi_id})
 
         if doc:
             # Update last accessed
-            await self.collection.update_one(
+            await self.update_one(
                 {"mpi_id": mpi_id},
                 {"$set": {"last_accessed": datetime.utcnow()}}
             )
+
+            # Cache the result if cache manager is available
+            if self.cache_manager:
+                await cache_patient_data(mpi_id, doc)
+
             return self._doc_to_entity(doc)
 
         return None
 
     async def find_by_ssn_hash(self, ssn_hash: str) -> Optional[PatientEntity]:
         """Find patient by SSN hash"""
-        doc = await self.collection.find_one({"ssn_hash": ssn_hash})
+        doc = await self.find_one({"ssn_hash": ssn_hash})
         return self._doc_to_entity(doc) if doc else None
 
     async def search(
@@ -94,19 +80,19 @@ class PatientRepository:
         if search_params.get("dob"):
             query["match_keys.dob"] = search_params["dob"]
 
-        # Execute search
-        cursor = self.collection.find(query).skip(offset).limit(limit)
-        results = []
+        # Execute search using BaseRepository method
+        docs = await self.find_many(
+            query,
+            skip=offset,
+            limit=limit
+        )
 
-        async for doc in cursor:
-            results.append(self._doc_to_entity(doc))
-
-        return results
+        return [self._doc_to_entity(doc) for doc in docs]
 
     async def create(self, patient: PatientEntity) -> str:
         """Create new patient record"""
         doc = patient.to_dict()
-        result = await self.collection.insert_one(doc)
+        result_id = await self.insert_one(doc)
 
         # Audit log
         await self._audit_log(
@@ -115,23 +101,30 @@ class PatientRepository:
             {"source": patient.source}
         )
 
-        return str(result.inserted_id)
+        # Cache the new patient data
+        if self.cache_manager:
+            await cache_patient_data(patient.mpi_id, doc)
+
+        return result_id
 
     async def update(self, mpi_id: str, updates: Dict[str, Any]) -> bool:
         """Update patient record"""
-        updates["updated_at"] = datetime.utcnow()
-
-        result = await self.collection.update_one(
+        success = await self.update_one(
             {"mpi_id": mpi_id},
             {"$set": updates}
         )
 
-        if result.modified_count > 0:
+        if success:
             await self._audit_log(
                 mpi_id,
                 "updated",
                 {"fields": list(updates.keys())}
             )
+
+            # Invalidate cache
+            if self.cache_manager:
+                await invalidate_patient_cache(mpi_id)
+
             return True
 
         return False
@@ -142,10 +135,10 @@ class PatientRepository:
         if system:
             query["external_system"] = system
 
-        cursor = self.mappings_collection.find(query)
+        docs = await self.mappings_collection.find(query).to_list(length=None)
         identifiers = []
 
-        async for doc in cursor:
+        for doc in docs:
             identifiers.append({
                 "system": doc["external_system"],
                 "value": doc["external_id"],
@@ -189,13 +182,13 @@ class PatientRepository:
         """Get patient history/audit trail"""
         start_date = datetime.utcnow() - timedelta(days=days)
 
-        cursor = self.audit_collection.find({
+        docs = await self.audit_collection.find({
             "mpi_id": mpi_id,
             "timestamp": {"$gte": start_date}
-        }).sort("timestamp", -1).limit(limit)
+        }).sort("timestamp", -1).limit(limit).to_list(length=limit)
 
         history = []
-        async for entry in cursor:
+        for entry in docs:
             history.append({
                 "timestamp": entry["timestamp"],
                 "action": entry["action"],

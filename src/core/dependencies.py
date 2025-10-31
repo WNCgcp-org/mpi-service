@@ -2,10 +2,13 @@
 Dependency injection for the application
 """
 
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from fastapi import Request, Depends
-from motor.motor_asyncio import AsyncIOMotorDatabase
-import redis.asyncio as redis
+
+# Core utilities
+from core.database import DatabaseManager, get_database_manager
+from core.cache import CacheManager, get_cache_manager
+from core.config import get_config
 
 # Domain services
 from domains.patient.services.patient_service import PatientService
@@ -24,15 +27,15 @@ from domains.matching.services.matching_service import MatchingService
 from domains.matching.repositories.matching_repository import MatchingRepository
 
 
-# Database dependencies
-async def get_database(request: Request) -> AsyncIOMotorDatabase:
-    """Get MongoDB database instance"""
-    return request.app.state.mpi_service.db
+# Core dependencies
+async def get_database_manager(request: Request) -> DatabaseManager:
+    """Get database manager instance"""
+    return request.app.state.db_manager
 
 
-async def get_redis(request: Request) -> redis.Redis:
-    """Get Redis client instance"""
-    return request.app.state.mpi_service.redis
+async def get_cache_manager(request: Request) -> Optional[CacheManager]:
+    """Get cache manager instance"""
+    return getattr(request.app.state, 'cache_manager', None)
 
 
 async def get_mpi_service(request: Request):
@@ -42,48 +45,51 @@ async def get_mpi_service(request: Request):
 
 # Repository dependencies
 async def get_patient_repository(
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    cache_manager: Optional[CacheManager] = Depends(get_cache_manager)
 ) -> PatientRepository:
     """Get patient repository instance"""
-    return PatientRepository(db)
+    return PatientRepository(db_manager, cache_manager)
 
 
 async def get_admin_repository(
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    cache_manager: Optional[CacheManager] = Depends(get_cache_manager)
 ) -> AdminRepository:
     """Get admin repository instance"""
-    return AdminRepository(db)
+    return AdminRepository(db_manager, cache_manager)
 
 
 async def get_monitoring_repository(
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    cache_manager: Optional[CacheManager] = Depends(get_cache_manager)
 ) -> MonitoringRepository:
     """Get monitoring repository instance"""
-    return MonitoringRepository(db)
+    return MonitoringRepository(db_manager, cache_manager)
 
 
 async def get_config_repository(
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    cache_manager: Optional[CacheManager] = Depends(get_cache_manager)
 ) -> ConfigRepository:
     """Get config repository instance"""
-    return ConfigRepository(db)
+    return ConfigRepository(db_manager, cache_manager)
 
 
 async def get_matching_repository(
-    db: AsyncIOMotorDatabase = Depends(get_database),
-    redis_client: redis.Redis = Depends(get_redis)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    cache_manager: Optional[CacheManager] = Depends(get_cache_manager)
 ) -> MatchingRepository:
     """Get matching repository instance"""
-    return MatchingRepository(db, redis_client)
+    return MatchingRepository(db_manager, cache_manager)
 
 
 # Service dependencies
 async def get_patient_service(
-    repository: PatientRepository = Depends(get_patient_repository),
-    redis_client: redis.Redis = Depends(get_redis)
+    repository: PatientRepository = Depends(get_patient_repository)
 ) -> PatientService:
     """Get patient service instance"""
-    return PatientService(repository, redis_client)
+    return PatientService(repository)
 
 
 async def get_admin_service(
