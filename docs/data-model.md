@@ -1,10 +1,17 @@
 # MPI Service Data Model
 
 ## Purpose
-The MPI service is a **lightweight identifier resolution service**, not a patient data warehouse. It only stores the minimum data necessary to:
+The MPI service is a **lightweight identifier resolution service** with **centralized configuration** and **domain-driven architecture**. It only stores the minimum data necessary to:
 1. Match incoming patient data to existing MPI IDs
-2. Cache recent lookups for performance
-3. Track identifier mappings
+2. Cache recent lookups for performance with multi-level caching
+3. Track identifier mappings with audit trails
+4. Provide operational metrics and health monitoring
+
+## Architecture Integration
+This data model integrates with the **Controller/Service/Repository** pattern:
+- **Repositories**: Handle data persistence using centralized `DatabaseManager`
+- **Services**: Implement business logic with caching via `CacheManager`
+- **Controllers**: Expose APIs with consistent response formats
 
 ## Collections
 
@@ -99,14 +106,33 @@ Operational metrics with automatic cleanup:
 - No address or contact information stored
 - Audit logs contain actions but minimal PHI
 
-## Indexes
+## Database Management
 
-### `mpi_identifiers`:
+### **Centralized Index Creation**
+All indexes are automatically created during service startup via `DatabaseManager`:
+
+```python
+# In core/database.py - BaseRepository handles common indexes
+class DatabaseManager:
+    async def initialize(self):
+        # Auto-creates indexes for all collections
+        await self._create_common_indexes()
+
+    async def _create_common_indexes(self):
+        # Primary indexes for mpi_identifiers
+        await self.get_collection("mpi_identifiers").create_index([("mpi_id", 1)], unique=True)
+        await self.get_collection("mpi_identifiers").create_index([("ssn_hash", 1)])
+        # ... additional indexes
+```
+
+### **Index Strategy**
+
+#### `mpi_identifiers`:
 ```javascript
-// Primary lookup
+// Primary lookup (managed by DatabaseManager)
 db.mpi_identifiers.createIndex({"mpi_id": 1}, {unique: true})
 
-// Matching indexes
+// Matching indexes (auto-created during startup)
 db.mpi_identifiers.createIndex({"ssn_hash": 1})
 db.mpi_identifiers.createIndex({"match_keys.ssn_last4": 1, "match_keys.dob": 1})
 db.mpi_identifiers.createIndex({
@@ -115,7 +141,7 @@ db.mpi_identifiers.createIndex({
   "match_keys.dob": 1
 })
 
-// Maintenance
+// Maintenance indexes
 db.mpi_identifiers.createIndex({"last_accessed": 1})
 ```
 

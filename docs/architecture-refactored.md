@@ -1,7 +1,7 @@
-# MPI Service - Refactored Architecture
+# MPI Service - Domain-Driven Architecture
 
 ## Overview
-The MPI service has been refactored to follow Domain-Driven Design (DDD) principles with a clear **Controller/Service/Repository** pattern. This provides better separation of concerns, testability, and maintainability.
+The MPI service follows **Domain-Driven Design (DDD)** principles with a **Controller/Service/Repository** pattern and **centralized configuration management**. This provides excellent separation of concerns, testability, maintainability, and production-ready abstractions.
 
 ## Architecture Pattern
 
@@ -19,6 +19,12 @@ The MPI service has been refactored to follow Domain-Driven Design (DDD) princip
 ### Domain Structure
 ```
 src/
+├── main.py                 # Application entry point
+├── core/
+│   ├── config.py          # Centralized configuration
+│   ├── database.py        # Database abstractions
+│   ├── cache.py           # Cache abstractions
+│   └── dependencies.py    # Dependency injection
 ├── domains/
 │   ├── patient/
 │   │   ├── controllers/    # HTTP endpoints
@@ -31,16 +37,47 @@ src/
 │   │   ├── repositories/
 │   │   └── models/
 │   ├── admin/
-│   │   └── ...
+│   │   └── controllers/
 │   ├── monitoring/
-│   │   └── ...
+│   │   ├── controllers/
+│   │   └── repositories/
 │   └── config/
-│       └── ...
-├── core/
-│   └── dependencies.py     # Dependency injection
-├── providers/              # MPI providers (Verato, Internal, Hybrid)
-└── main_refactored.py     # Application entry point
+│       └── controllers/
+└── providers/              # MPI providers (Verato, Internal, Hybrid)
+    ├── base_provider.py
+    ├── verato.py
+    ├── internal.py
+    └── hybrid.py
 ```
+
+## Core Infrastructure
+
+### **Centralized Configuration** (`core/config.py`)
+- **Environment-specific validation**: Stricter settings in production
+- **Type-safe configuration**: Dataclasses with validation
+- **Singleton pattern**: LRU cache ensures single instance
+- **Security**: Sensitive data masking in logs
+- **Categories**: App, Provider, Database, Redis, HTTP, Security, Logging, Performance
+
+### **Database Abstractions** (`core/database.py`)
+- **DatabaseManager**: Singleton connection manager with automatic index creation
+- **BaseRepository**: Common CRUD operations for all repositories
+- **Health checks**: Database connectivity and performance monitoring
+- **Index management**: Automatic creation during startup
+- **Connection lifecycle**: Proper initialization and cleanup
+
+### **Cache Abstractions** (`core/cache.py`)
+- **CacheManager**: Redis connection and operation manager
+- **MatchingCache**: High-level caching for patient matching operations
+- **MetricsCache**: Specialized caching for performance metrics
+- **CacheKeyBuilder**: Consistent cache key generation utilities
+- **Multi-level strategy**: Memory → Redis → MongoDB → API
+
+### **Dependency Injection** (`core/dependencies.py`)
+- **FastAPI integration**: Clean dependency management
+- **Repository factories**: Centralized repository creation
+- **Service factories**: Proper dependency chains
+- **Optional dependencies**: Graceful degradation when components unavailable
 
 ## Domain Breakdown
 
@@ -211,32 +248,49 @@ Response:
 }
 ```
 
-## Benefits of New Architecture
+## Benefits of Current Architecture
 
 1. **Separation of Concerns**
    - Controllers handle HTTP concerns only
    - Services contain business logic
    - Repositories manage data persistence
+   - Core utilities provide shared infrastructure
 
-2. **Testability**
+2. **Centralized Management**
+   - Single configuration system with validation
+   - Unified database connection management
+   - Consistent caching strategies across domains
+   - Proper dependency injection patterns
+
+3. **Testability**
    - Each layer can be tested independently
    - Mock repositories for service tests
    - Mock services for controller tests
+   - Clean abstractions for easy mocking
 
-3. **Maintainability**
+4. **Maintainability**
    - Clear domain boundaries
    - Single responsibility per class
    - Easy to locate functionality
+   - Consistent patterns across all domains
 
-4. **Scalability**
+5. **Scalability**
    - Stateless services
    - Horizontal scaling ready
    - Cache-first architecture
+   - Connection pooling and performance optimizations
 
-5. **Flexibility**
+6. **Production Readiness**
+   - Health checks for all components
+   - Comprehensive monitoring and metrics
+   - Graceful degradation when dependencies fail
+   - Environment-specific configuration validation
+
+7. **Flexibility**
    - Easy to swap providers
    - Simple to add new domains
    - Clean extension points
+   - Configuration-driven behavior
 
 ## Migration Path
 
