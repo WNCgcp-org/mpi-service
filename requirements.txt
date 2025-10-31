@@ -1,0 +1,39 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# Performance optimizations
+uvloop==0.19.0          # 2-4x faster event loop
+orjson==3.9.10          # 2-3x faster JSON
+httptools==0.6.1        # Faster HTTP parsing
+aiocache==0.12.2        # Multi-level caching
+
+# Async drivers
+aiohttp==3.9.1          # Async HTTP client
+redis[hiredis]==5.0.1   # Redis with C speedups
+motor==3.3.2            # Async MongoDB driver
+asyncpg==0.29.0         # Fast PostgreSQL driver (optional)
+
+# ML and data processing
+numpy==1.26.2           # Vectorized operations
+pandas==2.1.4           # Data manipulation
+scikit-learn==1.3.2     # ML algorithms (Phase 2)
+numba==0.58.1           # JIT compilation for speed
+
+# Monitoring and profiling
+prometheus-client==0.19.0
+py-spy==0.3.14          # Profiling without stopping
+memory-profiler==0.61.0
+
+# Development tools
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.12.0
+mypy==1.7.1
+ipython==8.18.1
+
+# Optional performance tools
+# cython==3.0.6         # Compile Python to C
+# pypy3                 # Alternative interpreter
+# grpcio==1.60.0        # If using gRPC instead of REST

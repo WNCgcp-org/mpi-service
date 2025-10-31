@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  mpi-service:
+    build: .
+    container_name: mpi-service
+    ports:
+      - "8000:8000"
+    environment:
+      # Service configuration
+      MPI_PROVIDER: verato
+
+      # Redis configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_POOL_SIZE: 50
+
+      # MongoDB configuration
+      MONGODB_URI: mongodb://mongodb:27017
+      MPI_DB: mpi_service
+      MONGO_POOL_SIZE: 50
+
+      # Verato configuration (add your actual values)
+      VERATO_API_KEY: ${VERATO_API_KEY}
+      VERATO_ENDPOINT: https://cust0161-dev.verato-connect.com/link-ws/svc/postIdentity
+
+      # Performance settings
+      CONNECTION_POOL_SIZE: 100
+      CACHE_TTL: 3600
+      BATCH_SIZE: 100
+      REQUEST_TIMEOUT: 30
+
+    depends_on:
+      - redis
+      - mongodb
+    networks:
+      - mpi-network
+    volumes:
+      - ./src:/app/src  # For development
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: mpi-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    volumes:
+      - redis-data:/data
+    networks:
+      - mpi-network
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7
+    container_name: mpi-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: mpi_service
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - mpi-network
+    restart: unless-stopped
+
+  # Optional: Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mpi-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - mpi-network
+    restart: unless-stopped
+
+networks:
+  mpi-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  mongo-data:
+  prometheus-data:
